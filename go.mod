@@ -1,5 +1,5 @@
-module github.com/budenny/telegram-files-downloader
+module github.com/clisboa/telegram-files-downloader
 
-go 1.18
+go 1.24
 
-require gopkg.in/telebot.v3 v3.0.0 // indirect
+require gopkg.in/telebot.v4 v4.0.0-beta.5

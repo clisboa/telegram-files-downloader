@@ -3,17 +3,15 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
 
-	tele "gopkg.in/telebot.v3"
-	"gopkg.in/telebot.v3/middleware"
+	tele "gopkg.in/telebot.v4"
+	"gopkg.in/telebot.v4/middleware"
 )
 
 type Cfg struct {
@@ -35,8 +33,12 @@ var cfg Cfg
 var stats Stats
 
 func initCfg() {
-	cfg.InitialWorkingDir = mustGetWd()
+	cfg.InitialWorkingDir = os.Getenv("TELEGRAM_DEST")
+	if cfg.InitialWorkingDir == "" {
+		log.Fatal("TELEGRAM_DEST is not set")
+	}
 	log.Println("Working directory:", cfg.InitialWorkingDir)
+	os.Setenv("TELEGRAM_DEST", "")
 
 	cfg.TelegramToken = os.Getenv("TELEGRAM_TOKEN")
 	if cfg.TelegramToken == "" {
@@ -56,27 +58,12 @@ func initCfg() {
 	}
 }
 
-func mustGetWd() string {
-	wd, err := os.Getwd()
-	if err != nil {
-		log.Fatal(err)
-	}
-	return wd
-}
-
 func handleHelp(c tele.Context) error {
 	msg := "This is a bot for downloading attachments.\n"
 	msg += fmt.Sprintf("Chat ID: %d\nCommands:\n", c.Chat().ID)
 	msg += "/help - show this help\n"
-	msg += "/cd [-r] <path> - change working directory (-r: reset to initial working dir)\n"
-	msg += "/pwd - print working directory\n"
-	msg += "/ls - list files in current working directory\n"
 	msg += "/stats - print statistics\n"
 	return c.Send(msg)
-}
-
-func handlePwd(c tele.Context) error {
-	return c.Reply(mustGetWd())
 }
 
 func humanReadableSize(size int64) string {
@@ -91,60 +78,6 @@ func humanReadableSize(size int64) string {
 		return fmt.Sprintf("%d MB", size/1024/1024)
 	}
 	return fmt.Sprintf("%d GB", size/1024/1024/1024)
-}
-
-func handleLs(c tele.Context) error {
-	wd := mustGetWd()
-	files, err := ioutil.ReadDir(wd)
-	if err != nil {
-		return err
-	}
-	msg := "Files in " + wd + ":\n"
-	for _, file := range files {
-		t := '-'
-		if file.IsDir() {
-			t = 'd'
-		}
-		s := fmt.Sprintf("%c %-50s: %s\n",
-			t, file.Name(), humanReadableSize(file.Size()))
-		if len(s)+len(msg) >= 400 {
-			c.Reply(msg)
-			msg = ""
-		}
-		msg += s
-	}
-	return c.Reply(msg)
-}
-
-func handleCd(c tele.Context) error {
-	args := c.Args()
-	if len(args) != 1 {
-		return c.Reply("Usage: /cd [-r] <path>")
-	}
-	wd := args[0]
-	if wd == "-r" {
-		wd = cfg.InitialWorkingDir
-	}
-
-	if filepath.IsAbs(wd) && !strings.HasPrefix(wd, cfg.InitialWorkingDir) {
-		logEverywhere(c, "Path is not relative to initial working dir")
-		return errorOutside
-	}
-
-	err := os.MkdirAll(wd, 0755)
-	if err != nil {
-		logEverywhere(c, "MkdirAll: %s", err.Error())
-		return err
-	}
-
-	err = os.Chdir(wd)
-	if err != nil {
-		logEverywhere(c, "Chdir: %s", err.Error())
-		return err
-	}
-
-	log.Printf("Working directory changed to %s", wd)
-	return c.Reply("done!")
 }
 
 func handleStats(c tele.Context) error {
@@ -175,8 +108,9 @@ func downloadFile(c tele.Context, f *tele.File, fname string) {
 
 func downloadFileInternal(c tele.Context, f *tele.File, fname string) {
 	log.Printf("Enqueued: %s\n", fname)
+	logEverywhere(c, "Enqueued: %s\n", fname)
 
-	fpath := filepath.Join(mustGetWd(), fname)
+	fpath := filepath.Join(cfg.InitialWorkingDir, fname)
 	tmp := fpath + ".tmp"
 
 	if err := c.Bot().Download(f, tmp); err != nil {
@@ -204,22 +138,6 @@ func handleOnDocument(c tele.Context) error {
 	return nil
 }
 
-func handleOnPhoto(c tele.Context) error {
-	p := c.Message().Photo
-	go downloadFile(c, p.MediaFile(), p.UniqueID+".jpg")
-	return nil
-}
-
-func handleOnVideo(c tele.Context) error {
-	v := c.Message().Video
-	if v.MIME != "video/mp4" {
-		logEverywhere(c, "Unsupported video format: %s, wants 'video/mp4'", v.MIME)
-		// download anyway
-	}
-	go downloadFile(c, v.MediaFile(), v.UniqueID+".mp4")
-	return nil
-}
-
 func main() {
 	stats.startTime = time.Now()
 
@@ -242,14 +160,9 @@ func main() {
 	}
 
 	b.Handle("/help", handleHelp)
-	b.Handle("/ls", handleLs)
-	b.Handle("/pwd", handlePwd)
-	b.Handle("/cd", handleCd)
 	b.Handle("/stats", handleStats)
 
-	b.Handle(tele.OnPhoto, handleOnPhoto)
 	b.Handle(tele.OnDocument, handleOnDocument)
-	b.Handle(tele.OnVideo, handleOnVideo)
 
 	b.Start()
 }
